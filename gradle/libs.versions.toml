@@ -1,0 +1,19 @@
+[versions]
+kotlin = "2.3.21"
+spring-boot = "4.1.0"
+grpc = "1.78.0"
+protobuf = "4.33.2"
+protobuf-plugin = "0.9.6"
+
+[libraries]
+grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpc" }
+grpc-protobuf = { module = "io.grpc:grpc-protobuf", version.ref = "grpc" }
+grpc-netty-shaded = { module = "io.grpc:grpc-netty-shaded", version.ref = "grpc" }
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+protobuf-kotlin = { module = "com.google.protobuf:protobuf-kotlin", version.ref = "protobuf" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }
+spring-dependency-management = { id = "io.spring.dependency-management", version = "1.1.7" }
+protobuf = { id = "com.google.protobuf", version.ref = "protobuf-plugin" }

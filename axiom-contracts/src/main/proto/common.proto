@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package axiom.common;
+
+option java_package = "me.roton.axiom.contracts.common";
+option java_multiple_files = true;
+
+enum BillingCycle {
+    BILLING_CYCLE_UNSPECIFIED = 0;
+    MONTHLY = 1;
+    YEARLY = 2;
+}
+
+enum SubscriptionStatus {
+    SUBSCRIPTION_STATUS_UNSPECIFIED = 0;
+    ACTIVE = 1;
+    PAST_DUE = 2;
+    CANCELLED = 3;
+    TRIALING = 4;
+}
+
+message Money {
+    int64 amount_cents = 1;
+    string currency = 2; // ISO 4217, e.g. "USD", "UAH"
+}
