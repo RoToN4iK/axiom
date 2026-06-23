@@ -17,6 +17,7 @@ dependencies {
     api(libs.grpc.netty.shaded)
     api(libs.protobuf.java)
     api(libs.protobuf.kotlin)
+    api("io.grpc:grpc-kotlin-stub:1.4.3")
 
     testImplementation(platform("org.junit:junit-bom:5.11.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -43,11 +44,15 @@ protobuf {
         create("grpc") {
             artifact = "io.grpc:protoc-gen-grpc-java:${libs.versions.grpc.get()}"
         }
+        create("grpckt") {
+            artifact = "io.grpc:protoc-gen-grpc-kotlin:1.4.3:jdk8@jar"
+        }
     }
     generateProtoTasks {
         all().forEach {
             it.plugins {
                 create("grpc") {}
+                create("grpckt") {}
             }
             it.builtins {
                 create("kotlin") {}
