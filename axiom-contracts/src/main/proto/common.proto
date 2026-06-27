@@ -17,6 +17,7 @@ enum SubscriptionStatus {
     PAST_DUE = 2;
     CANCELLED = 3;
     TRIALING = 4;
+    SUPERSEDED = 5;
 }
 
 message Money {

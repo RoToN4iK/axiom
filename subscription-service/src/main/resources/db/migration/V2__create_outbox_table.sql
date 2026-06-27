@@ -1,10 +1,10 @@
 SET TIME ZONE 'UTC';
 
-CREATE TABLE accounts (
+CREATE TABLE outbox(
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) NOT NULL UNIQUE,
-    password_hash VARCHAR(255) NOT NULL,
-    role VARCHAR(50) NOT NULL DEFAULT 'USER',
+    event_type VARCHAR(255) NOT NULL,
+    payload JSON NOT NULL,
+    published_at TIMESTAMPTZ DEFAULT null,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 )

@@ -3,5 +3,6 @@ rootProject.name = "axiom"
 include(
     "axiom-contracts",
     "axiom-common",
-    "auth-service"
+    "auth-service",
+    "subscription-service"
 )

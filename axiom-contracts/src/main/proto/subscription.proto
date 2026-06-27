@@ -11,6 +11,7 @@ service SubscriptionService {
     rpc CreateSubscription(CreateSubscriptionRequest) returns (SubscriptionResponse);
     rpc GetSubscription(GetSubscriptionRequest) returns (SubscriptionResponse);
     rpc CancelSubscription(CancelSubscriptionRequest) returns (SubscriptionResponse);
+    rpc UpgradeSubscription(UpgradeSubscriptionRequest) returns (UpgradeSubscriptionResponse);
 }
 
 message CreateSubscriptionRequest {
@@ -27,6 +28,19 @@ message CancelSubscriptionRequest {
 }
 
 message SubscriptionResponse {
+    string subscription_id = 1;
+    string subscriber_id = 2;
+    string plan_id = 3;
+    axiom.common.SubscriptionStatus status = 4;
+    string current_period_end = 5;
+}
+
+message UpgradeSubscriptionRequest {
+    string subscription_id = 1;
+    string new_plan_id = 2;
+}
+
+message UpgradeSubscriptionResponse {
     string subscription_id = 1;
     string subscriber_id = 2;
     string plan_id = 3;

@@ -1,11 +1,11 @@
-package me.roton.axiom.auth
+package me.roton.axiom.subscription
 
 import me.roton.axiom.common.bootstrap.AxiomBootstrap
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
 
 @SpringBootApplication
-class AuthServiceApplication {
+class SubscriptionServiceApplication {
     companion object {
         init {
             AxiomBootstrap.forceUtc()
@@ -14,5 +14,5 @@ class AuthServiceApplication {
 }
 
 fun main(args: Array<String>) {
-    runApplication<AuthServiceApplication>(*args)
+    runApplication<SubscriptionServiceApplication>(*args)
 }
