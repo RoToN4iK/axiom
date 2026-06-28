@@ -7,7 +7,10 @@ import me.roton.axiom.contracts.subscription.cancelSubscriptionRequest
 import me.roton.axiom.contracts.subscription.createSubscriptionRequest
 import me.roton.axiom.subscription.domain.Subscription
 import me.roton.axiom.subscription.domain.SubscriptionStatus
+import me.roton.axiom.subscription.domain.plan.BillingCycle
+import me.roton.axiom.subscription.domain.plan.Plan
 import me.roton.axiom.subscription.repository.OutboxRepository
+import me.roton.axiom.subscription.repository.PlanRepository
 import me.roton.axiom.subscription.repository.SubscriptionRepository
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -38,6 +41,9 @@ class SubscriptionGrpcServiceCreateAndCancelTest {
     lateinit var outboxRepository: OutboxRepository
 
     @Autowired
+    lateinit var planRepository: PlanRepository
+
+    @Autowired
     lateinit var subscriptionGrpcService: SubscriptionGrpcService
 
     companion object {
@@ -54,31 +60,42 @@ class SubscriptionGrpcServiceCreateAndCancelTest {
         }
     }
 
+    // Shared helper — every CreateSubscription test needs a real, persisted Plan
+    // to point at, since createSubscription now validates planId actually exists.
+    private fun createTestPlan(): Plan = planRepository.save(
+        Plan(
+            name = "Test Plan",
+            priceAmountCents = 999,
+            priceCurrency = "USD",
+            billingCycle = BillingCycle.MONTHLY
+        )
+    )
+
     @Test
     fun `creating a subscription for a brand new subscriber succeeds`() = runTest {
         val subscriberId = UUID.randomUUID()
-        val planId = UUID.randomUUID()
+        val plan = createTestPlan()
 
         val response = subscriptionGrpcService.createSubscription(
             createSubscriptionRequest {
                 this.subscriberId = subscriberId.toString()
-                this.planId = planId.toString()
+                this.planId = plan.id.toString()
             }
         )
 
         assertEquals(subscriberId.toString(), response.subscriberId)
-        assertEquals(planId.toString(), response.planId)
+        assertEquals(plan.id.toString(), response.planId)
     }
 
     @Test
     fun `creating a subscription starts it in TRIALING status`() = runTest {
         val subscriberId = UUID.randomUUID()
-        val planId = UUID.randomUUID()
+        val plan = createTestPlan()
 
         val response = subscriptionGrpcService.createSubscription(
             createSubscriptionRequest {
                 this.subscriberId = subscriberId.toString()
-                this.planId = planId.toString()
+                this.planId = plan.id.toString()
             }
         )
 
@@ -89,12 +106,12 @@ class SubscriptionGrpcServiceCreateAndCancelTest {
     @Test
     fun `creating a subscription writes exactly one SubscriptionCreated outbox event`() = runTest {
         val subscriberId = UUID.randomUUID()
-        val planId = UUID.randomUUID()
+        val plan = createTestPlan()
 
         subscriptionGrpcService.createSubscription(
             createSubscriptionRequest {
                 this.subscriberId = subscriberId.toString()
-                this.planId = planId.toString()
+                this.planId = plan.id.toString()
             }
         )
 
@@ -103,14 +120,32 @@ class SubscriptionGrpcServiceCreateAndCancelTest {
     }
 
     @Test
+    fun `creating a subscription for a nonexistent plan throws NOT_FOUND`() = runTest {
+        // new test — covers the guard clause that was just added
+        val subscriberId = UUID.randomUUID()
+
+        val exception = assertFailsWith<StatusRuntimeException> {
+            subscriptionGrpcService.createSubscription(
+                createSubscriptionRequest {
+                    this.subscriberId = subscriberId.toString()
+                    this.planId = UUID.randomUUID().toString() // no Plan ever saved with this id
+                }
+            )
+        }
+
+        assertEquals(Status.Code.NOT_FOUND, exception.status.code)
+    }
+
+    @Test
     fun `creating a second subscription for a subscriber who already has a live one throws ALREADY_EXISTS`() = runTest {
         val subscriberId = UUID.randomUUID()
+        val plan = createTestPlan()
 
         // first subscription — should succeed
         subscriptionGrpcService.createSubscription(
             createSubscriptionRequest {
                 this.subscriberId = subscriberId.toString()
-                this.planId = UUID.randomUUID().toString()
+                this.planId = plan.id.toString()
             }
         )
 
@@ -119,7 +154,7 @@ class SubscriptionGrpcServiceCreateAndCancelTest {
             subscriptionGrpcService.createSubscription(
                 createSubscriptionRequest {
                     this.subscriberId = subscriberId.toString()
-                    this.planId = UUID.randomUUID().toString()
+                    this.planId = plan.id.toString()
                 }
             )
         }
@@ -132,11 +167,12 @@ class SubscriptionGrpcServiceCreateAndCancelTest {
         // this proves the live-status check is correctly scoped — a subscriber with
         // only a CANCELLED row should be treated as having no current subscription
         val subscriberId = UUID.randomUUID()
+        val plan = createTestPlan()
 
         subscriptionRepository.save(
             Subscription(
                 subscriberId = subscriberId,
-                planId = UUID.randomUUID(),
+                planId = plan.id!!,
                 status = SubscriptionStatus.CANCELLED,
                 currentPeriodEnd = Instant.now().minusSeconds(3600)
             )
@@ -145,7 +181,7 @@ class SubscriptionGrpcServiceCreateAndCancelTest {
         val response = subscriptionGrpcService.createSubscription(
             createSubscriptionRequest {
                 this.subscriberId = subscriberId.toString()
-                this.planId = UUID.randomUUID().toString()
+                this.planId = plan.id.toString()
             }
         )
 

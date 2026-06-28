@@ -17,9 +17,11 @@ import me.roton.axiom.subscription.domain.outbox.OutboxUpgradePayload
 import me.roton.axiom.subscription.domain.Subscription
 import me.roton.axiom.subscription.domain.SubscriptionStatus
 import me.roton.axiom.subscription.domain.outbox.OutboxCreatePayload
+import me.roton.axiom.subscription.domain.plan.nextPeriodEnd
 import me.roton.axiom.subscription.domain.toProto
 import me.roton.axiom.subscription.domain.toResponse
 import me.roton.axiom.subscription.repository.OutboxRepository
+import me.roton.axiom.subscription.repository.PlanRepository
 import me.roton.axiom.subscription.repository.SubscriptionRepository
 import org.slf4j.LoggerFactory
 import org.springframework.kafka.core.KafkaTemplate
@@ -36,7 +38,8 @@ class SubscriptionGrpcService(
     private val outboxRepository: OutboxRepository,
     private val objectMapper: ObjectMapper,
     private val kafkaTemplate: KafkaTemplate<String, String>,
-    private val clock: Clock
+    private val clock: Clock,
+    private val planRepository: PlanRepository
 ): SubscriptionServiceGrpcKt.SubscriptionServiceCoroutineImplBase() {
     private val logger = LoggerFactory.getLogger(SubscriptionGrpcService::class.java)
 
@@ -154,10 +157,17 @@ class SubscriptionGrpcService(
 
     @Transactional
     override suspend fun createSubscription(request: CreateSubscriptionRequest): SubscriptionResponse {
-        val matches = subscriptionRepository.findBySubscriberIdAndStatusIn(UUID.fromString(request.subscriberId))
-        if (!matches.isEmpty()) {
+        val matchingSubscriptions = subscriptionRepository.findBySubscriberIdAndStatusIn(UUID.fromString(request.subscriberId))
+        if (!matchingSubscriptions.isEmpty()) {
             throw StatusRuntimeException(
-                Status.ALREADY_EXISTS.withDescription("User already have subscription: ${matches[0].id}")
+                Status.ALREADY_EXISTS.withDescription("User already have subscription: ${matchingSubscriptions[0].id}")
+            )
+        }
+
+        val matchingPlan = planRepository.findById(UUID.fromString(request.planId))
+        if (matchingPlan.isEmpty) {
+            throw StatusRuntimeException(
+                Status.NOT_FOUND.withDescription("There is no plan: ${request.planId}")
             )
         }
 
@@ -165,7 +175,7 @@ class SubscriptionGrpcService(
             subscriberId = UUID.fromString(request.subscriberId),
             planId = UUID.fromString(request.planId),
             status = SubscriptionStatus.TRIALING,
-            currentPeriodEnd = clock.now() //TODO: change to real plan time
+            currentPeriodEnd = matchingPlan.get().billingCycle.nextPeriodEnd(clock.now())
         )
 
         subscriptionRepository.save(subscription)
