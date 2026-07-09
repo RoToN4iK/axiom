@@ -81,8 +81,8 @@ This project is under active development. Current progress:
 
 - [x] `axiom-contracts` — proto definitions for `Plan`, `Subscriber`, `Subscription`, common types
 - [x] `axiom-common` — `Money`, exception hierarchy, idempotency validation, `Clock`
-- [ ] `auth-service`
-- [ ] `subscription-service`
+- [x] `auth-service`
+- [x] `subscription-service`
 - [ ] `billing-service`
 - [ ] `gateway-service`
 - [ ] `payment-service`
