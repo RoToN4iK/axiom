@@ -10,5 +10,5 @@ data class OutboxUpgradePayload(
     val oldPlanId: UUID,
     val newPlanId: UUID,
     val status: SubscriptionStatus,
-    val currentPeriodEnd: Instant
+    val oldPeriodEnd: Instant
 )

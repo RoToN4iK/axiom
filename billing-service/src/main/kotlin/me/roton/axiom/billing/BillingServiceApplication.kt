@@ -1,11 +1,11 @@
-package me.roton.axiom.auth
+package me.roton.axiom.billing
 
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
 
 @SpringBootApplication
-class AuthServiceApplication
+class BillingServiceApplication
 
 fun main(args: Array<String>) {
-    runApplication<AuthServiceApplication>(*args)
+    runApplication<BillingServiceApplication>(*args)
 }

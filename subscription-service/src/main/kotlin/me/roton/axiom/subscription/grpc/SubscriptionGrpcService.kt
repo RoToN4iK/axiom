@@ -64,6 +64,13 @@ class SubscriptionGrpcService(
             )
         }
 
+        val matchingPlan = planRepository.findById(UUID.fromString(request.newPlanId))
+        if (matchingPlan.isEmpty) {
+            throw StatusRuntimeException(
+                Status.NOT_FOUND.withDescription("There is no plan: ${request.newPlanId}")
+            )
+        }
+
         oldSubscription.status = SubscriptionStatus.SUPERSEDED
 
         subscriptionRepository.save(oldSubscription)
@@ -72,7 +79,7 @@ class SubscriptionGrpcService(
             subscriberId = oldSubscription.subscriberId,
             status = SubscriptionStatus.ACTIVE,
             planId = UUID.fromString(request.newPlanId),
-            currentPeriodEnd = clock.now() //TODO: change to real plan time
+            currentPeriodEnd = matchingPlan.get().billingCycle.nextPeriodEnd(clock.now())
         )
         subscriptionRepository.save(newSubscription)
 
@@ -82,7 +89,7 @@ class SubscriptionGrpcService(
             oldPlanId = oldSubscription.planId,
             newPlanId = newSubscription.planId,
             status = newSubscription.status,
-            currentPeriodEnd = newSubscription.currentPeriodEnd
+            oldPeriodEnd = oldSubscription.currentPeriodEnd
         )
 
         val outboxEvent = OutboxEvent(

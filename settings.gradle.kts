@@ -4,5 +4,6 @@ include(
     "axiom-contracts",
     "axiom-common",
     "auth-service",
-    "subscription-service"
+    "subscription-service",
+    "billing-service"
 )
