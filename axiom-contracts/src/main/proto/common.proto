@@ -20,6 +20,13 @@ enum SubscriptionStatus {
     SUPERSEDED = 5;
 }
 
+enum InvoiceStatus {
+    INVOICE_STATUS_UNSPECIFIED = 0;
+    PENDING = 1;
+    PAID = 2;
+    FAILED = 3;
+}
+
 message Money {
     int64 amount_cents = 1;
     string currency = 2; // ISO 4217, e.g. "USD", "UAH"
