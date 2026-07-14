@@ -22,7 +22,6 @@ import java.math.BigDecimal
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 
-// TODO: add consuming of subscription.created, subscription.cancelled
 @Service
 class SubscriptionUpgradedConsumer(
     private val objectMapper: ObjectMapper,
@@ -46,11 +45,9 @@ class SubscriptionUpgradedConsumer(
         val oldPlanMoney = Money(oldPlan.price.amountCents, oldPlan.price.currency)
         val newPlanMoney = Money(newPlan.price.amountCents, newPlan.price.currency)
 
-        val oldPlanDailyRate = oldPlanMoney / BigDecimal(30)
-        val newPlanDailyRate = newPlanMoney / BigDecimal(30)
-
-        val credit = oldPlanDailyRate * BigDecimal(daysRemaining)
-        val charge = newPlanDailyRate * BigDecimal(daysRemaining)
+        // Multiply first, then divide to prevent premature rounding errors!
+        val credit = (oldPlanMoney * BigDecimal(daysRemaining)) / BigDecimal(30)
+        val charge = (newPlanMoney * BigDecimal(daysRemaining)) / BigDecimal(30)
         val total = charge - credit
 
         val invoice = Invoice(
