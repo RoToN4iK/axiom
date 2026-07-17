@@ -2,106 +2,62 @@ package me.roton.axiom.auth.grpc
 
 import io.grpc.Status
 import io.grpc.StatusRuntimeException
-import me.roton.axiom.auth.domain.Account
-import me.roton.axiom.auth.jwt.JwtService
-import me.roton.axiom.auth.otp.OtpService
-import me.roton.axiom.auth.repository.AccountRepository
+import me.roton.axiom.auth.service.ApiKeyService
 import me.roton.axiom.contracts.auth.*
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder
 import org.springframework.stereotype.Service
+import java.util.UUID
 
 @Service
 class AuthGrpcService(
-    private val accountRepository: AccountRepository,
-    private val passwordEncoder: BCryptPasswordEncoder,
-    private val jwtService: JwtService,
-    private val otpService: OtpService
+    private val apiKeyService: ApiKeyService
 ) : AuthServiceGrpcKt.AuthServiceCoroutineImplBase() {
 
-    override suspend fun registerAccount(request: RegisterAccountRequest): RegisterAccountResponse {
-        validateEmailAndPassword(request.email, request.password)
-
-        if (accountRepository.findByEmail(request.email) != null) {
+    override suspend fun createApiKey(request: CreateApiKeyRequest): CreateApiKeyResponse {
+        if (request.companyName.isBlank()) {
             throw StatusRuntimeException(
-                Status.ALREADY_EXISTS.withDescription("Account with email ${request.email} already exists")
+                Status.INVALID_ARGUMENT.withDescription("company_name is required")
             )
         }
 
-        val account = Account(
-            email = request.email,
-            passwordHash = passwordEncoder.encode(request.password)!!
-        )
-        val saved = accountRepository.save(account)
+        // currently this has no auth and used by ApiKeyBootstrapRunner
+        val generated = apiKeyService.createKey(request.companyName)
 
-        return registerAccountResponse {
-            accountId = saved.id.toString()
-            email = saved.email
+        return createApiKeyResponse {
+            apiKeyId = generated.apiKeyId.toString()
+            companyName = generated.companyName
+            rawKey = generated.rawKey
         }
     }
 
-    override suspend fun login(request: LoginRequest): LoginResponse {
-        val account = accountRepository.findByEmail(request.email)
-            ?: throw StatusRuntimeException(Status.UNAUTHENTICATED.withDescription("Invalid email or password"))
+    override suspend fun validateApiKey(request: ValidateApiKeyRequest): ValidateApiKeyResponse {
+        val found = apiKeyService.validate(request.rawKey)
 
-        if (!passwordEncoder.matches(request.password, account.passwordHash)) {
-            // deliberately the SAME error message as "account not found" above —
-            // never reveal whether the email exists or the password was wrong
-            throw StatusRuntimeException(Status.UNAUTHENTICATED.withDescription("Invalid email or password"))
-        }
-
-        val tokens = jwtService.generateTokenPair(account.id!!, account.role)
-
-        return loginResponse {
-            accessToken = tokens.accessToken
-            refreshToken = tokens.refreshToken
+        return if (found != null) {
+            validateApiKeyResponse {
+                valid = true
+                companyName = found.companyName
+            }
+        } else {
+            validateApiKeyResponse {
+                valid = false
+            }
         }
     }
 
-    override suspend fun requestOtp(request: RequestOtpRequest): RequestOtpResponse {
-        val account = accountRepository.findByEmail(request.email)
-            ?: throw StatusRuntimeException(Status.NOT_FOUND.withDescription("No account with that email"))
-
-        val code = otpService.generateAndStore(account.email)
-
-        // TODO: actually send this via notification-service once it exists.
-        // For now, this is a stand-in so the RPC is testable end-to-end.
-        println("OTP for ${account.email}: $code")
-
-        return requestOtpResponse {
-            sent = true
-        }
-    }
-
-    override suspend fun verifyOtp(request: VerifyOtpRequest): VerifyOtpResponse {
-        val isValid = otpService.verify(request.email, request.code)
-
-        return verifyOtpResponse {
-            valid = isValid
-        }
-    }
-
-    override suspend fun refreshToken(request: RefreshTokenRequest): RefreshTokenResponse {
-        val accountId = jwtService.validateAndExtractAccountId(request.refreshToken, expectedType = "refresh")
-            ?: throw StatusRuntimeException(Status.UNAUTHENTICATED.withDescription("Invalid or expired refresh token"))
-
-        val account = accountRepository.findById(accountId).orElseThrow {
-            StatusRuntimeException(Status.UNAUTHENTICATED.withDescription("Account no longer exists"))
+    override suspend fun revokeApiKey(request: RevokeApiKeyRequest): RevokeApiKeyResponse {
+        val id = try {
+            UUID.fromString(request.apiKeyId)
+        } catch (_: IllegalArgumentException) {
+            throw StatusRuntimeException(Status.INVALID_ARGUMENT.withDescription("Invalid api_key_id"))
         }
 
-        val tokens = jwtService.generateTokenPair(account.id!!, account.role)
+        val revoked = apiKeyService.revoke(id)
+        if (!revoked) {
+            throw StatusRuntimeException(
+                Status.NOT_FOUND.withDescription("No API key with id ${request.apiKeyId}")
+            )
+        }
 
-        return refreshTokenResponse {
-            accessToken = tokens.accessToken
-            refreshToken = tokens.refreshToken
-        }
-    }
-
-    private fun validateEmailAndPassword(email: String, password: String) {
-        if (email.isBlank() || !email.contains("@")) {
-            throw StatusRuntimeException(Status.INVALID_ARGUMENT.withDescription("Invalid email"))
-        }
-        if (password.length < 8) {
-            throw StatusRuntimeException(Status.INVALID_ARGUMENT.withDescription("Password must be at least 8 characters"))
-        }
+        return revokeApiKeyResponse { this.revoked = true }
     }
 }

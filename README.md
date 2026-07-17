@@ -1,22 +1,24 @@
 # Axiom
 
-A headless, microservices-based SaaS subscription and billing engine. Axiom manages the full lifecycle of recurring subscriptions — plan changes, proration, invoicing, and dunning — independently of any payment provider. It does not move money itself; it tells a pluggable payment provider (Stripe by default) what to charge, and reacts to the result.
+A headless, microservices-based SaaS subscription and billing engine. Axiom manages the full lifecycle of recurring subscriptions — plan changes, proration, invoicing — independently of any payment provider. It does not move money itself; it tells a pluggable payment provider (Stripe by default) what to charge, and reacts to the result.
 
 Think of it as a self-hosted alternative to building Stripe Billing logic from scratch: you run Axiom alongside your own application, and your backend talks to it over REST.
 
 ## Why this exists
 
-Payment providers like Stripe are excellent at moving money but provide limited support for the business logic around it — proration on mid-cycle plan changes, retry schedules for failed payments (dunning), and consistent subscription state across services. Every SaaS company ends up building this logic themselves. Axiom is that logic, built once, designed to be reused.
+Payment providers like Stripe are excellent at moving money but provide limited support for the business logic around it — proration on mid-cycle plan changes, consistent subscription state across services, invoice history. Every SaaS company ends up building this logic themselves. Axiom is that logic, built once, designed to be reused.
 
 ## How it fits into your stack
 
 ```
-Your App  →  Axiom (REST API)       — you call Axiom to manage plans, subscribers, subscriptions
-Axiom     →  Your App (Webhooks)    — Axiom notifies you when billing events happen
-Axiom     →  Payment Provider       — Axiom delegates the actual charge to Stripe (or your own implementation)
+Your App  →  Axiom (REST API, X-Api-Key header) — you call Axiom to manage plans, subscriptions
+Axiom     →  Your App (Webhooks)                — Axiom notifies you when billing events happen
+Axiom     →  Payment Provider                    — Axiom delegates the actual charge to Stripe (or your own implementation)
 ```
 
 Axiom never touches card data and is not PCI-scoped. It owns the *state and math* of billing; the payment provider owns *moving the money*.
+
+**Axiom has no concept of your end users.** It is a server-to-server API — the caller is your backend, authenticated with an API key, not a human logging in. Your own application owns its own user accounts and login flow entirely; Axiom only ever sees an opaque `externalUserId` you pass it when creating a subscription. See "A real correction" below for why this matters.
 
 ## Architecture
 
@@ -33,41 +35,52 @@ Axiom is a Gradle monorepo of independent Spring Boot services communicating int
                   service       service   service       service
         │              │          │          │              │
      Postgres       Postgres   Postgres   Postgres      (no DB)
-     + Redis         + Redis              
-                       │          │          │              │
-                       └──────────┴────Kafka─┴──────────────┘
+        │              │          │          │              │
+        └──────────────┴────Kafka─┴──────────┴──────────────┘
+                        (external, self-hosted)
+
+billing-service also makes a synchronous gRPC call back to
+subscription-service (PlanService.GetPlan) to fetch plan prices
+when calculating proration.
 ```
 
 ### Modules
 
-| Module                 | Type                         | Responsibility                                                                                                                                 |
-|------------------------|------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------|
-| `axiom-contracts`      | Shared library               | `.proto` files and generated gRPC/Kotlin stubs. The source of truth for inter-service contracts.                                               |
-| `axiom-common`         | Shared library               | Framework-free Kotlin: `Money` (decimal-safe arithmetic), sealed exception hierarchy, idempotency key validation, injectable `Clock`.          |
-| `gateway-service`      | REST (Spring Web)            | The only service exposed publicly. Validates input, handles JWT auth, enforces idempotency keys via Redis, forwards to internal gRPC services. |
-| `auth-service`         | gRPC server                  | Identity: account creation, OTP generation/verification, JWT issuance.                                                                         |
-| `subscription-service` | gRPC server                  | Core domain: plans, subscribers, subscription lifecycle. Publishes events via the Transactional Outbox pattern.                                |
-| `billing-service`      | gRPC server + Kafka consumer | Proration math (BigDecimal-only), invoice generation.                                                                                          |
-| `payment-service`      | gRPC server + REST webhooks  | Talks to payment providers via a `PaymentProvider` interface. Stripe is the reference implementation.                                          |
-| `notification-service` | Kafka consumer               | Sends emails on billing events. No database.                                                                                                   |
+| Module                 | Type                                  | Status         | Responsibility                                                                                                                                                                         |
+|------------------------|---------------------------------------|----------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `axiom-contracts`      | Shared library                        | ✅ Done         | `.proto` files and generated gRPC/Kotlin stubs (including `grpckt` for coroutine service stubs). Source of truth for inter-service contracts.                                          |
+| `axiom-common`         | Shared library                        | ✅ Done         | Framework-free Kotlin: `Money` (decimal-safe arithmetic), sealed exception hierarchy, idempotency key validation, injectable `Clock`, `AxiomBootstrap`.                                |
+| `auth-service`         | gRPC server                           | ✅ Done         | Company-level API key management: create, validate, revoke. **Not** end-user login — see below.                                                                                        |
+| `subscription-service` | gRPC server                           | ✅ Done         | Core domain: `Plan` CRUD, subscription lifecycle (create/get/cancel/upgrade). Publishes events via the Transactional Outbox pattern.                                                   |
+| `billing-service`      | gRPC client + Kafka consumer/producer | ✅ Done         | Consumes `subscription.upgraded`, fetches plan prices via gRPC, calculates proration, generates `Invoice` + `LineItem`s, publishes `invoice.created` via its own Transactional Outbox. |
+| `gateway-service`      | REST (Spring Web)                     | 🚧 In progress | The only service exposed publicly. Forwards to internal gRPC services. OpenAPI/Swagger UI via springdoc. Real `X-Api-Key` enforcement not yet wired in (deliberate — see Status).      |
+| `payment-service`      | gRPC server + REST webhooks           | ⬜ Not started  | Talks to Stripe. No multi-provider abstraction planned for v1.                                                                                                                         |
+| `notification-service` | Kafka consumer                        | ⬜ Not started  | Scope decision deferred until `payment-service` exists.                                                                                                                                |
 
 ### Why a monorepo
 
 Services share contracts and common code constantly during development. Rather than publishing a new contracts JAR to Reposilite on every change, services depend on `axiom-contracts` and `axiom-common` as Gradle project dependencies (`project(":axiom-contracts")`). Reposilite is reserved for publishing release artifacts, not for the inner dev loop.
 
+## A real correction: why `auth-service` doesn't do login
+
+`auth-service` was originally built as a conventional user-login system — email/password registration, OTP verification over Redis, JWT access/refresh tokens. All of it worked correctly. It was also the wrong feature for this product.
+
+Axiom is self-hosted, headless infrastructure that a *company* plugs into their own backend — the same relationship you have with Stripe's API. The caller on every request is that company's server, not a human at a keyboard. A company already has its own user accounts and its own login flow; Axiom has no business owning a second one. The right authentication model for this shape of product is a static **API key**, generated once and sent as a header on every request — not registration, OTP, or per-user sessions.
+
+`auth-service` now manages `ApiKey` records instead: one row per company, the raw key is shown exactly once at creation time, and only its hash is ever stored (SHA-256, not BCrypt — API keys need direct lookup-by-hash, which a salted hash can't support, and don't need slow hashing since they're already high-entropy random data rather than a human-chosen password). The original JWT/OTP/BCrypt implementation is preserved as a reference pattern for the next project where it *is* the right fit — most of the underlying Spring/Kotlin work carried over directly; only the domain model needed to change.
+
 ## Tech stack
 
 - **Language:** Kotlin 2.3.21, Java 21 toolchain
-- **Framework:** Spring Boot 4.1 (native gRPC server/client support, Data JPA, Flyway starters)
-- **Inter-service communication:** gRPC + Protocol Buffers (with Kotlin coroutine stubs via `grpckt`)
-- **Client communication:** REST (gateway only)
+- **Framework:** Spring Boot 4.1 (native gRPC server *and* client support, Data JPA, Flyway starters)
+- **Inter-service communication:** gRPC + Protocol Buffers (Kotlin coroutine stubs via `grpckt`)
+- **Client communication:** REST (gateway only), documented via `springdoc-openapi` (Swagger UI at `/swagger-ui.html`)
 - **Messaging:** Apache Kafka (external, self-hosted on VPS — not run locally)
 - **Database:** PostgreSQL, one isolated logical database per service
-- **Cache / locking:** Redis (OTP storage, idempotency keys, distributed locks)
 - **Migrations:** Flyway
 - **Artifact hosting:** Reposilite (self-hosted, for published releases)
 - **Infra:** Docker, Docker Compose, Caddy
-- **Testing:** JUnit 5, Testcontainers
+- **Testing:** JUnit 5, Testcontainers (Postgres), Mockito-Kotlin (gRPC clients, `KafkaTemplate`, `Clock`)
 
 ## Local ports
 
@@ -78,48 +91,64 @@ Every service needs its own gRPC port. Keep this table updated whenever a new se
 | `auth-service`         | `9090`                    | `axiom_auth`         |                                                                     |
 | `subscription-service` | `9091`                    | `axiom_subscription` |                                                                     |
 | `billing-service`      | `9092`                    | `axiom_billing`      | gRPC-clients to `subscription-service` at `static://localhost:9091` |
-| `gateway-service`      | n/a (REST)                | none                 | will need its own HTTP port, e.g. `8080`                            |
+| `gateway-service`      | n/a (REST)                | none                 | HTTP on `8080`                                                      |
 | `payment-service`      | TBD                       | TBD                  |                                                                     |
 | `notification-service` | n/a (Kafka consumer only) | none                 |                                                                     |
 
 Postgres itself runs in Docker on host port `5433` (mapped from container `5432`) — see `docker/docker-compose.yml`.
 
 Local dev needs two things IntelliJ doesn't pick up from Gradle automatically:
-- **VM options** on every run configuration: `-Duser.timezone=UTC` (Spring Boot's Gradle-launched `bootRun` reads the `systemProperty` set in each service's `build.gradle.kts`, but IntelliJ's own run configs use a separate launcher and need this set explicitly per-configuration)
-- Each service needs its own `.env` file in its module root (not `src/main/resources/`) with real `POSTGRES_USER`/`POSTGRES_PASS`/`KAFKA_*` values
+- **VM options** on every run configuration: `-Duser.timezone=UTC`. Spring Boot's Gradle-launched `bootRun` reads the `systemProperty("user.timezone", "UTC")` set in each service's `build.gradle.kts` `tasks.named<BootRun>("bootRun")` block — but IntelliJ's own run configurations use a separate launcher that never touches your `main()` function early enough (a `companion object { init { ... } }` block does *not* reliably run before Flyway's autoconfiguration under IntelliJ's launcher, even though it does under `@SpringBootTest`). Setting `-Duser.timezone=UTC` directly as a VM option is the only fix confirmed to work from the IDE.
+- Each service needs its own `.env` file in its module root (not `src/main/resources/` — that gets bundled into the built JAR, which you don't want for a file full of secrets) with real `POSTGRES_USER`/`POSTGRES_PASS`/`KAFKA_*` values.
 
 ## Key design decisions
 
-**Money is never a float.** All monetary values are transmitted as integer cents (`int64`) over gRPC and handled via `BigDecimal` in application code. The `Money` type in `axiom-common` is the only way services should perform monetary arithmetic.
+**Money is never a float.** All monetary values are transmitted as integer cents (`int64`) over gRPC and handled via `BigDecimal` in application code. The `Money` type in `axiom-common` is the only way services should perform monetary arithmetic. When chaining a multiply and a divide (e.g. proration: `price × daysRemaining / cycleLength`), **multiply first, divide last** — dividing early introduces rounding error that compounds (found and fixed in `billing-service`'s proration calculation).
 
-**Eventual consistency via Transactional Outbox.** When a service needs to change its own state and notify other services, both actions happen in a single database transaction — the state change and an outbox row. A separate poller reads the outbox and publishes to Kafka, so a Kafka outage never causes data to drift between services.
+**Subscription upgrades create a new row, never mutate the old one.** The old row is marked `SUPERSEDED` (a status distinct from `CANCELLED`, since an upgrade and a user-initiated cancellation are different business facts and would otherwise be indistinguishable in churn/history reporting). This preserves the exact old-plan data (price, period end) that `billing-service` needs for proration.
 
-**Idempotency by design.** Every mutating request through the gateway requires an `Idempotency-Key` header, checked against Redis before being forwarded, so retried requests and double-clicks never cause duplicate charges.
+**Eventual consistency via Transactional Outbox.** When a service needs to change its own state and notify other services, both actions happen in a single database transaction — the state change and an outbox row. A separate `@Scheduled` poller reads unpublished rows and publishes to Kafka, blocking on the send's `Future` to confirm delivery before marking a row published, so a Kafka outage never causes silent data drift. Implemented independently in both `subscription-service` and `billing-service` — each service owns its own outbox table; the pattern isn't shared code, since each instance is tied to that service's own database.
 
-**Payment providers are pluggable.** `payment-service` depends on a `PaymentProvider` interface, not directly on Stripe. Swapping providers (PayPal, a local bank API, etc.) means implementing that interface — no changes anywhere else in the system.
+**Cross-service reads go through gRPC, never a shared database.** `billing-service` needs plan prices to calculate proration, but has no access to `subscription-service`'s database — it calls `PlanService.GetPlan` via a gRPC client instead. Services never read another service's tables directly.
+
+**Domain enums stay separate from proto enums.** e.g. `subscription-service`'s own `SubscriptionStatus` Kotlin enum is distinct from `axiom.common.SubscriptionStatus` (the generated proto enum), bridged by explicit `toProto()`/`toDomain()` mapping functions. This means persistence and wire format can evolve independently — the same principle applied to `Money`, `BillingCycle`, and `InvoiceStatus`. Proto-to-domain mapping functions are written as exhaustive `when` blocks with **no `else` branch**, so adding a new value to a `.proto` enum later causes a compile error here rather than a silent, wrong default.
+
+**API keys are hashed with SHA-256, not BCrypt.** Unlike a human password, an API key already is high-entropy random data and needs to be looked up by exact value (`WHERE key_hash = ?`). BCrypt's per-hash random salt makes that lookup impossible without already knowing the row. A fast, deterministic hash is the correct tool here — the opposite conclusion from password hashing, and worth remembering as a genuinely different problem shape, not a downgrade.
+
+**Payment providers are pluggable (planned).** `payment-service` will depend on a `PaymentProvider` interface, not directly on Stripe, so swapping providers means implementing that interface — no changes elsewhere in the system. Not yet built.
 
 ## Status
 
 This project is under active development. Current progress:
 
-- [x] `axiom-contracts` — proto definitions for `Plan`, `Subscriber`, `Subscription`, `Auth`, common types. Includes `grpckt` for Kotlin coroutine service stubs.
-- [x] `axiom-common` — `Money`, exception hierarchy, idempotency validation, `Clock`, `AxiomBootstrap`
-- [x] `auth-service` — register, login, OTP (Redis), JWT issuance + refresh
-- [x] `subscription-service` — Create/Get/Cancel/Upgrade subscription RPCs, `Plan` CRUD, full Transactional Outbox pattern with real Kafka publishing
-- [ ] `billing-service` — scaffolded, entities/proration logic in progress
-- [ ] `gateway-service`
-- [ ] `payment-service` — Stripe only, no multi-provider abstraction planned for v1
-- [ ] `notification-service` — scope decision deferred until `payment-service` exists
+- [x] `axiom-contracts`
+- [x] `axiom-common`
+- [x] `auth-service` — rebuilt around API keys after catching the login-system mismatch above
+- [x] `subscription-service`
+- [x] `billing-service`
+- [ ] `gateway-service` ← **currently here**
+- [ ] `payment-service`
+- [ ] `notification-service`
+
+Known, deliberate gaps (documented, not accidental):
+- `gateway-service` does not yet enforce `X-Api-Key` validation on incoming requests — `AuthService.ValidateApiKey` exists and works (verified via Postman gRPC calls), but no REST middleware calls it yet. All endpoints are currently open.
+- `AuthService.CreateApiKey` itself has no auth guard — anyone who can reach it can mint a new company key. Fine while nothing is deployed publicly; needs a guard (e.g. require an existing valid key, with a one-time bootstrap exception) before any real deployment.
+- No distributed lock on either service's outbox poller — not needed until a service runs as more than one instance.
+- No renewal scheduler — blocked on `billing-service`/`payment-service` existing to actually act on a "period ended" event; building it earlier would mean faking a successful charge that never happened.
+- `Plan` prices are assumed single-currency across an upgrade (no cross-currency proration guard) — plans are assumed region-locked at the product level, so a genuine cross-currency upgrade shouldn't be reachable from the UI/API layer above `subscription-service`.
 
 ## Getting started
 
-> Full setup instructions will be added once `gateway-service` and Docker Compose are in place.
+> Full setup instructions will be added once `gateway-service` and Docker Compose cover the whole stack.
 
 ```bash
-git clone https://github.com/RoToN4iK/axiom
+git clone <repo-url>
 cd axiom
+docker compose -f docker/docker-compose.yml up -d
 ./gradlew build
 ```
+
+Each service and docker needs its own `.env` (see Local ports above) before it will actually boot. On first boot, `auth-service` auto-generates a bootstrap API key if none exists yet and logs it once to the console — save it immediately, it cannot be retrieved again.
 
 ## License
 
