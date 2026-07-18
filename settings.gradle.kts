@@ -5,5 +5,6 @@ include(
     "axiom-common",
     "auth-service",
     "subscription-service",
-    "billing-service"
+    "billing-service",
+    "gateway-service"
 )
