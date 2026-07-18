@@ -4,6 +4,23 @@ A headless, microservices-based SaaS subscription and billing engine. Axiom mana
 
 Think of it as a self-hosted alternative to building Stripe Billing logic from scratch: you run Axiom alongside your own application, and your backend talks to it over REST.
 
+## Table of Contents
+
+- [Why this exists](#why-this-exists)
+- [How it fits into your stack](#how-it-fits-into-your-stack)
+- [Architecture](#architecture)
+    - [Modules](#modules)
+    - [Why a monorepo](#why-a-monorepo)
+- [The REST API surface (`gateway-service`)](#the-rest-api-surface-gateway-service)
+- [A real correction: why `auth-service` doesn't do login](#a-real-correction-why-auth-service-doesnt-do-login)
+- [Tech stack](#tech-stack)
+- [Local ports](#local-ports)
+- [Key design decisions](#key-design-decisions)
+- [Status](#status)
+- [Getting started](#getting-started)
+    - [Kafka](#kafka)
+- [License](#license)
+
 ## Why this exists
 
 Payment providers like Stripe are excellent at moving money but provide limited support for the business logic around it — proration on mid-cycle plan changes, consistent subscription state across services, invoice history. Every SaaS company ends up building this logic themselves. Axiom is that logic, built once, designed to be reused.
@@ -66,12 +83,12 @@ Services share contracts and common code constantly during development. Rather t
 All endpoints documented interactively at `/swagger-ui.html`. Every `POST`/`PUT`/`PATCH` requires an `Idempotency-Key` header (Redis-backed, 24h retention) — sending the same key twice replays the cached response instead of processing the request again.
 
 ```
-POST   /api/auth/keys              — create a new API key for a company
-POST   /api/auth/keys/{id}/revoke  — revoke a key
+POST   /api/auth/keys                  — create a new API key for a company
+POST   /api/auth/keys/{id}/revoke      — revoke a key
 
-POST   /api/plans                  — create a plan
-GET    /api/plans/{id}             — get a plan
-GET    /api/plans                  — list active plans
+POST   /api/plans                      — create a plan
+GET    /api/plans/{id}                 — get a plan
+GET    /api/plans                      — list active plans
 
 POST   /api/subscriptions              — create a subscription
 GET    /api/subscriptions/{id}         — get a subscription
@@ -89,13 +106,15 @@ Axiom is self-hosted, headless infrastructure that a *company* plugs into their 
 
 `auth-service` now manages `ApiKey` records instead: one row per company, the raw key is shown exactly once at creation time, and only its hash is ever stored (SHA-256, not BCrypt — API keys need direct lookup-by-hash, which a salted hash can't support, and don't need slow hashing since they're already high-entropy random data rather than a human-chosen password). The original JWT/OTP/BCrypt implementation is preserved as a reference pattern for the next project where it *is* the right fit — most of the underlying Spring/Kotlin work carried over directly; only the domain model needed to change.
 
+A second, smaller version of the same lesson: `subscriber.proto` (a planned `SubscriberService` for storing subscriber records) was removed entirely, never implemented. Axiom has no legitimate reason to store anything about a subscriber — that data belongs entirely to the company's own system. A `subscriberId` is just an opaque reference passed in wherever it's needed (e.g. `CreateSubscriptionRequest`), the same way `externalUserId` was always meant to work — it never needed to be its own entity or service.
+
 ## Tech stack
 
 - **Language:** Kotlin 2.3.21, Java 21 toolchain
 - **Framework:** Spring Boot 4.1 (native gRPC server *and* client support, Data JPA, Flyway starters)
 - **Inter-service communication:** gRPC + Protocol Buffers (Kotlin coroutine stubs via `grpckt`)
 - **Client communication:** REST (gateway only), documented via `springdoc-openapi` (Swagger UI at `/swagger-ui.html`)
-- **Messaging:** Apache Kafka (external, self-hosted on VPS — not run locally)
+- **Messaging:** Apache Kafka (self-hosted; remote by default, with an optional fully-local Docker Compose profile — see Kafka below)
 - **Database:** PostgreSQL, one isolated logical database per service
 - **Cache:** Redis (idempotency-key storage in `gateway-service`)
 - **Migrations:** Flyway
@@ -107,14 +126,14 @@ Axiom is self-hosted, headless infrastructure that a *company* plugs into their 
 
 Every service needs its own gRPC port. Keep this table updated whenever a new service is added — a port collision produces a confusing startup failure, not an obvious one.
 
-| Service                | gRPC port                 | Postgres DB          | Notes                                                       |
-|------------------------|---------------------------|----------------------|-------------------------------------------------------------|
-| `auth-service`         | `9090`                    | `axiom_auth`         |                                                             |
-| `subscription-service` | `9091`                    | `axiom_subscription` |                                                             |
-| `billing-service`      | `9092`                    | `axiom_billing`      | gRPC-client to `subscription-service`                       |
-| `gateway-service`      | n/a (REST)                | none                 | HTTP on `8080`. gRPC-clients to all three backend services. |
-| `payment-service`      | TBD                       | TBD                  |                                                             |
-| `notification-service` | n/a (Kafka consumer only) | none                 |                                                             |
+| Service                | gRPC port                 | Postgres DB          | Notes                                                                                     |
+|------------------------|---------------------------|----------------------|-------------------------------------------------------------------------------------------|
+| `auth-service`         | `9090`                    | `axiom_auth`         |                                                                                           |
+| `subscription-service` | `9091`                    | `axiom_subscription` |                                                                                           |
+| `billing-service`      | `9092`                    | `axiom_billing`      | gRPC-client to `subscription-service`                                                     |
+| `gateway-service`      | n/a (REST)                | none                 | HTTP on `8080`. gRPC-clients to all three backend services.                               |
+| `payment-service`      | `9096`                    | TBD                  | `9093`–`9095` are reserved by the local Kafka profile below — not available for services. |
+| `notification-service` | n/a (Kafka consumer only) | none                 |                                                                                           |
 
 Postgres itself runs in Docker on host port `5433` (mapped from container `5432`) — see `docker/docker-compose.yml`.
 
@@ -155,8 +174,8 @@ This project is under active development. Current progress:
 - [x] `auth-service` — rebuilt around API keys after catching the login-system mismatch above
 - [x] `subscription-service`
 - [x] `billing-service`
-- [x] `gateway-service` — full REST surface, idempotency, error translation, Swagger docs
-- [ ] `payment-service`
+- [x] `gateway-service` — full REST surface, idempotency, error translation, Swagger docs, optional local Kafka profile
+- [ ] `payment-service` ← **currently here**
 - [ ] `notification-service`
 
 Known, deliberate gaps (documented, not accidental):
@@ -169,8 +188,6 @@ Known, deliberate gaps (documented, not accidental):
 
 ## Getting started
 
-> Full setup instructions will be added once Docker Compose covers the whole stack (Kafka is currently external/VPS-hosted rather than containerized locally).
-
 ```bash
 git clone https://github.com/RoToN4iK/axiom.git
 cd axiom
@@ -179,6 +196,18 @@ docker compose -f docker/docker-compose.yml up -d
 ```
 
 Each service and docker needs its own `.env` (see Local ports above) before it will actually boot. On first boot, `auth-service` auto-generates a bootstrap API key if none exists yet and logs it once to the console — save it immediately, it cannot be retrieved again. Once running, browse the full API at `http://localhost:8080/swagger-ui.html`.
+
+By default, `subscription-service` and `billing-service` expect a real Kafka broker reachable via `.env`. If you don't have one, see the Kafka section below for a fully local, no-external-dependency alternative.
+
+### Kafka
+
+By default, point `.env`'s `KAFKA_*` values at your own Kafka broker (VPS, managed service, etc.).
+
+For a fully local dev environment with no external dependency:
+```bash
+docker compose -f docker/docker-compose.yml --profile local-kafka up -d
+```
+This starts a plaintext, unauthenticated Kafka container on `localhost:9094` — local-only, never intended to be exposed publicly.
 
 ## License
 
