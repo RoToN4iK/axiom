@@ -211,4 +211,4 @@ This starts a plaintext, unauthenticated Kafka container on `localhost:9094` —
 
 ## License
 
-TBD
+MIT — see [LICENSE](./LICENSE).
